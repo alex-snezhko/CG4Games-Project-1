@@ -1,0 +1,23 @@
+{
+  "name": "prog2",
+  "version": "1.0.0",
+  "description": "helper files for the cg4games class's second programming assignment",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NCSUcg4games/prog2.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/NCSUcg4games/prog2/issues"
+  },
+  "homepage": "https://github.com/NCSUcg4games/prog2#readme",
+  "dependencies": {
+    "gl-matrix": "^3.4.3",
+    "typescript": "^4.9.5"
+  }
+}

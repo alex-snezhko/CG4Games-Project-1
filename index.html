@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Final Project: Non-photorealistic rendering</title>
+
+    <script type="text/javascript" src="gl-matrix.js"></script>
+    <script type="text/javascript" src="rasterize.js"></script>
+  </head>
+
+  <style>
+    #myWebGLCanvas {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      z-index: 0;
+    }
+
+    .selected {
+      background-color: #666;
+      color: white;
+    }
+  </style>
+
+  <body onload="main();">
+    <canvas id="myWebGLCanvas" width="512" height="512"></canvas>
+    <div style="position: absolute; z-index: 1;">
+      <div>
+        <div>Movement mode</div>
+        <button id="move" class="selected">Move</button>
+        <button id="free-rotate">Free rotate</button>
+        <button id="continous-rotate">Continuously rotate</button>
+      </div>
+      <div>
+        <div>Model</div>
+        <button id="teapot" class="selected">Teapot</button>
+        <button id="plane">Plane</button>
+        <button id="person" style="display: none;">Person</button>
+      </div>
+    </div>
+  </body>
+</html>
