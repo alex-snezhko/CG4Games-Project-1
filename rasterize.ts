@@ -7,7 +7,7 @@ const INPUT_URL = "https://ncsucg4games.github.io/prog2/"; // location of input 
 const INPUT_ROOMS_URL = INPUT_URL + "rooms.json"; // rooms file loc
 const INPUT_TRIANGLES_URL = INPUT_URL + "triangles.json"; // triangles file loc
 const INPUT_SPHERES_URL = INPUT_URL + "spheres.json"; // spheres file loc
-const defaultEye = vec3.fromValues(0, 0, 30); // default eye position in world space
+const defaultEye = vec3.fromValues(0, 0, 10); // default eye position in world space
 // const defaultCenter = vec3.fromValues(0,0,0); // default view direction in world space
 const defaultLookAt = vec3.fromValues(0,0,-1); // default view direction in world space
 const defaultUp = vec3.fromValues(0,1,0); // default view up vector
@@ -70,6 +70,10 @@ const allMoveModes = ["free-rotate", "continous-rotate", "move"] as MoveMode[];
 type ModelName = "teapot" | "plane" | "person";
 let selectedModel: ModelName = "teapot";
 const allModels = ["teapot", "plane", "person"] as ModelName[];
+
+type ShadingMode = "blinn-phong" | "cel-shading" | "pencil-sketch";
+let selectedShading: ShadingMode = "blinn-phong";
+const allShadingModes = ["blinn-phong", "cel-shading", "pencil-sketch"] as ShadingMode[];
 
 // ASSIGNMENT HELPER FUNCTIONS
 
@@ -239,11 +243,11 @@ async function loadObjs() {
 
             function getV3(strs: string[]) {
                 const v3 = strs.map(parseFloat).slice(0, 3) as v3;
-                if (model === "teapot") {
-                    const t = v3[1];
-                    v3[1] = v3[2];
-                    v3[2] = t;
-                }
+                // if (model === "teapot") {
+                //     const t = v3[1];
+                //     v3[1] = v3[2];
+                //     v3[2] = t;
+                // }
                 return v3;
             }
 
@@ -298,6 +302,13 @@ async function loadObjs() {
         elem.classList.add("selected");
         selectMove(moveMode);
     }));
+
+    const allShadingData = allShadingModes.map(m => [m, document.getElementById(m)!] as [ShadingMode, HTMLElement]);
+    allShadingData.forEach(([shading, elem]) => elem.addEventListener("click", event => {
+        allShadingData.forEach(([_, elem]) => elem.classList.remove("selected"));
+        elem.classList.add("selected");
+        selectShadingMode(shading);
+    }));
 }
 
 function rotateView(ang: number, axis: v3) {
@@ -351,6 +362,11 @@ function selectMove(mode: MoveMode) {
 
 function selectModel(model: ModelName) {
     selectedModel = model;
+    reset();
+}
+
+function selectShadingMode(shadingMode: ShadingMode) {
+    selectedShading = shadingMode;
     reset();
 }
 
@@ -444,14 +460,171 @@ function setupShaders() {
             } // end if using texture
         } // end main
     `;
+
+    // define vertex shader in essl using es6 template strings
+    const celShadingVShaderCode = `
+        attribute vec3 aVertexPosition; // vertex position
+        attribute vec3 aVertexNormal; // vertex normal
+        attribute vec2 aVertexUV; // vertex texture uv
+        
+        uniform mat4 umMatrix; // the model matrix
+        uniform mat4 upvmMatrix; // the project view model matrix
+        
+        varying vec3 vWorldPos; // interpolated world position of vertex
+        varying vec3 vVertexNormal; // interpolated normal for frag shader
+        varying vec2 vVertexUV; // interpolated uv for frag shader
+
+        void main(void) {
+            
+            // vertex position
+            vec4 vWorldPos4 = umMatrix * vec4(aVertexPosition, 1.0);
+            vWorldPos = vec3(vWorldPos4.x,vWorldPos4.y,vWorldPos4.z);
+            gl_Position = upvmMatrix * vec4(aVertexPosition, 1.0);
+
+            // vertex normal (assume no non-uniform scale)
+            vec4 vWorldNormal4 = umMatrix * vec4(aVertexNormal, 0.0);
+            vVertexNormal = normalize(vec3(vWorldNormal4.x,vWorldNormal4.y,vWorldNormal4.z)); 
+            
+            // vertex uv
+            vVertexUV = aVertexUV;
+        }
+    `;
+
+    const celShadingFShaderCode = `
+        precision mediump float; // set float to medium precision
+
+        // eye location
+        uniform vec3 uEyePosition; // the eye's position in world
+        
+        // light properties
+        uniform vec3 uLightAmbient; // the light's ambient color
+        uniform vec3 uLightDiffuse; // the light's diffuse color
+        uniform vec3 uLightSpecular; // the light's specular color
+        uniform vec3 uLightPosition; // the light's position
+        
+        // material properties
+        uniform vec3 uAmbient; // the ambient reflectivity
+        uniform vec3 uDiffuse; // the diffuse reflectivity
+        uniform vec3 uSpecular; // the specular reflectivity
+        uniform float uShininess; // the specular exponent
+        
+        // texture properties
+        uniform bool uUsingTexture; // if we are using a texture
+        uniform sampler2D uTexture; // the texture for the fragment
+        varying vec2 vVertexUV; // texture uv of fragment
+            
+        // geometry properties
+        varying vec3 vWorldPos; // world xyz of fragment
+        varying vec3 vVertexNormal; // normal of fragment
+        
+        void main(void) {
+            vec3 lightDir = normalize(uLightPosition);
+        
+            // ambient term
+            vec3 ambient = uAmbient*uLightAmbient; 
+            
+            // diffuse term
+            vec3 normal = normalize(vVertexNormal); 
+            vec3 light = normalize(uLightPosition - vWorldPos);
+            float intensity = max(0.0,dot(normal,light));
+            vec4 color;
+            if (intensity > 0.95)
+                color = vec4(1.0,0.5,0.5,1.0);
+            else if (intensity > 0.5)
+                color = vec4(0.6,0.3,0.3,1.0);
+            else if (intensity > 0.25)
+                color = vec4(0.4,0.2,0.2,1.0);
+            else
+                color = vec4(0.2,0.1,0.1,1.0);
+
+            gl_FragColor = color;
+        } // end main
+    `;
+
+    // define vertex shader in essl using es6 template strings
+    const pencilShadingVShaderCode = `
+        attribute vec3 aVertexPosition; // vertex position
+        attribute vec3 aVertexNormal; // vertex normal
+        attribute vec2 aVertexUV; // vertex texture uv
+        
+        uniform mat4 umMatrix; // the model matrix
+        uniform mat4 upvmMatrix; // the project view model matrix
+        
+        varying vec3 vWorldPos; // interpolated world position of vertex
+        varying vec3 vVertexNormal; // interpolated normal for frag shader
+        varying vec2 vVertexUV; // interpolated uv for frag shader
+
+        void main(void) {
+            
+            // vertex position
+            vec4 vWorldPos4 = umMatrix * vec4(aVertexPosition, 1.0);
+            vWorldPos = vec3(vWorldPos4.x,vWorldPos4.y,vWorldPos4.z);
+            gl_Position = upvmMatrix * vec4(aVertexPosition, 1.0);
+
+            // vertex normal (assume no non-uniform scale)
+            vec4 vWorldNormal4 = umMatrix * vec4(aVertexNormal, 0.0);
+            vVertexNormal = normalize(vec3(vWorldNormal4.x,vWorldNormal4.y,vWorldNormal4.z)); 
+            
+            // vertex uv
+            vVertexUV = aVertexUV;
+        }
+    `;
+
+    const pencilShadingFShaderCode = `
+        precision mediump float; // set float to medium precision
+
+        // eye location
+        uniform vec3 uEyePosition; // the eye's position in world
+        
+        // light properties
+        uniform vec3 uLightAmbient; // the light's ambient color
+        uniform vec3 uLightDiffuse; // the light's diffuse color
+        uniform vec3 uLightSpecular; // the light's specular color
+        uniform vec3 uLightPosition; // the light's position
+        
+        // material properties
+        uniform vec3 uAmbient; // the ambient reflectivity
+        uniform vec3 uDiffuse; // the diffuse reflectivity
+        uniform vec3 uSpecular; // the specular reflectivity
+        uniform float uShininess; // the specular exponent
+        
+        // texture properties
+        uniform bool uUsingTexture; // if we are using a texture
+        uniform sampler2D uTexture; // the texture for the fragment
+        varying vec2 vVertexUV; // texture uv of fragment
+            
+        // geometry properties
+        varying vec3 vWorldPos; // world xyz of fragment
+        varying vec3 vVertexNormal; // normal of fragment
+        
+        void main(void) {
+            // vec3 lightDir = normalize(uLightPosition);
+        
+            // // ambient term
+            // vec3 ambient = uAmbient*uLightAmbient; 
+            
+            // // diffuse term
+            // vec3 normal = normalize(vVertexNormal); 
+            // vec3 light = normalize(uLightPosition - vWorldPos);
+            // float intensity = max(0.0,dot(normal,light));
+            // vec4 color = vec4(gl_Position.z, gl_Position.z, gl_Position.z, 1.0);
+
+            // gl_FragColor = color;
+            gl_FragColor = vec4(vec3(gl_FragCoord.z), 1.0);
+        } // end main
+    `;
     
     try {
         const fShader = gl.createShader(gl.FRAGMENT_SHADER)!; // create frag shader
-        gl.shaderSource(fShader,fShaderCode); // attach code to shader
+        // gl.shaderSource(fShader,fShaderCode); // attach code to shader
+        // gl.shaderSource(fShader,celShadingFShaderCode); // attach code to shader
+        gl.shaderSource(fShader,pencilShadingFShaderCode); // attach code to shader
         gl.compileShader(fShader); // compile the code for gpu execution
 
         const vShader = gl.createShader(gl.VERTEX_SHADER)!; // create vertex shader
-        gl.shaderSource(vShader,vShaderCode); // attach code to shader
+        // gl.shaderSource(vShader,vShaderCode); // attach code to shader
+        // gl.shaderSource(vShader,celShadingVShaderCode); // attach code to shader
+        gl.shaderSource(vShader,pencilShadingVShaderCode); // attach code to shader
         gl.compileShader(vShader); // compile the code for gpu execution
             
         if (!gl.getShaderParameter(fShader, gl.COMPILE_STATUS)) { // bad frag shader compile
