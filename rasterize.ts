@@ -7,7 +7,7 @@ const INPUT_URL = "https://ncsucg4games.github.io/prog2/"; // location of input 
 const INPUT_ROOMS_URL = INPUT_URL + "rooms.json"; // rooms file loc
 const INPUT_TRIANGLES_URL = INPUT_URL + "triangles.json"; // triangles file loc
 const INPUT_SPHERES_URL = INPUT_URL + "spheres.json"; // spheres file loc
-const defaultEye = vec3.fromValues(0, 0, 10); // default eye position in world space
+const defaultEye = vec3.fromValues(0, 0, 6); // default eye position in world space
 // const defaultCenter = vec3.fromValues(0,0,0); // default view direction in world space
 const defaultLookAt = vec3.fromValues(0,0,-1); // default view direction in world space
 const defaultUp = vec3.fromValues(0,1,0); // default view up vector
@@ -46,15 +46,14 @@ let allBuffers: Record<ModelName, WebGLTriangleBuffers | null> = { teapot: null,
 /* shader parameter locations */
 let vPosAttribLoc: number; // where to put position for vertex shader
 let vNormAttribLoc: number; // where to put normal for vertex shader
-let vUVAttribLoc: number; // where to put UV for vertex shader
 let mMatrixULoc: WebGLUniformLocation; // where to put model matrix for vertex shader
 let pvmMatrixULoc: WebGLUniformLocation; // where to put project model view matrix for vertex shader
 let ambientULoc: WebGLUniformLocation; // where to put ambient reflecivity for fragment shader
 let diffuseULoc: WebGLUniformLocation; // where to put diffuse reflecivity for fragment shader
 let specularULoc: WebGLUniformLocation; // where to put specular reflecivity for fragment shader
 let shininessULoc: WebGLUniformLocation; // where to put specular exponent for fragment shader
-let usingTextureULoc: WebGLUniformLocation; // where to put using texture boolean for fragment shader
-let textureULoc: WebGLUniformLocation; // where to put texture for fragment shader
+let firstPassULoc: WebGLUniformLocation; // where to put using texture boolean for fragment shader
+let depthTexULoc: WebGLUniformLocation; // where to put texture for fragment shader
 
 /* interaction variables */
 let Eye: v3 = vec3.clone(defaultEye); // eye position in world space
@@ -545,14 +544,12 @@ function setupShaders() {
     const pencilShadingVShaderCode = `
         attribute vec3 aVertexPosition; // vertex position
         attribute vec3 aVertexNormal; // vertex normal
-        attribute vec2 aVertexUV; // vertex texture uv
         
         uniform mat4 umMatrix; // the model matrix
         uniform mat4 upvmMatrix; // the project view model matrix
         
         varying vec3 vWorldPos; // interpolated world position of vertex
         varying vec3 vVertexNormal; // interpolated normal for frag shader
-        varying vec2 vVertexUV; // interpolated uv for frag shader
 
         void main(void) {
             
@@ -564,9 +561,6 @@ function setupShaders() {
             // vertex normal (assume no non-uniform scale)
             vec4 vWorldNormal4 = umMatrix * vec4(aVertexNormal, 0.0);
             vVertexNormal = normalize(vec3(vWorldNormal4.x,vWorldNormal4.y,vWorldNormal4.z)); 
-            
-            // vertex uv
-            vVertexUV = aVertexUV;
         }
     `;
 
@@ -588,11 +582,6 @@ function setupShaders() {
         uniform vec3 uSpecular; // the specular reflectivity
         uniform float uShininess; // the specular exponent
         
-        // texture properties
-        uniform bool uUsingTexture; // if we are using a texture
-        uniform sampler2D uTexture; // the texture for the fragment
-        varying vec2 vVertexUV; // texture uv of fragment
-            
         // geometry properties
         varying vec3 vWorldPos; // world xyz of fragment
         varying vec3 vVertexNormal; // normal of fragment
@@ -649,8 +638,6 @@ function setupShaders() {
                 gl.enableVertexAttribArray(vPosAttribLoc); // connect attrib to array
                 vNormAttribLoc = gl.getAttribLocation(shaderProgram, "aVertexNormal"); // ptr to vertex normal attrib
                 gl.enableVertexAttribArray(vNormAttribLoc); // connect attrib to array
-                vUVAttribLoc = gl.getAttribLocation(shaderProgram, "aVertexUV"); // ptr to vertex UV attrib
-                gl.enableVertexAttribArray(vUVAttribLoc); // connect attrib to array
                 
                 // locate vertex uniforms
                 mMatrixULoc = gl.getUniformLocation(shaderProgram, "umMatrix")!; // ptr to mmat
@@ -666,8 +653,8 @@ function setupShaders() {
                 diffuseULoc = gl.getUniformLocation(shaderProgram, "uDiffuse")!; // ptr to diffuse
                 specularULoc = gl.getUniformLocation(shaderProgram, "uSpecular")!; // ptr to specular
                 shininessULoc = gl.getUniformLocation(shaderProgram, "uShininess")!; // ptr to shininess
-                usingTextureULoc = gl.getUniformLocation(shaderProgram, "uUsingTexture")!; // ptr to using texture
-                textureULoc = gl.getUniformLocation(shaderProgram, "uTexture")!; // ptr to texture
+                firstPassULoc = gl.getUniformLocation(shaderProgram, "uFirstPass")!; // ptr to texture
+                depthTexULoc = gl.getUniformLocation(shaderProgram, "uDepthTex")!; // ptr to texture
                 
                 // pass global (not per model) constants into fragment uniforms
                 gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
@@ -684,6 +671,69 @@ function setupShaders() {
     } // end catch
 } // end setup shaders
 
+function renderScene(mMatrix: any, hpvmMatrix: any) {
+    // render each triangle set
+    const buffers = allBuffers[selectedModel];
+
+    if (buffers !== null) {
+        // make model transform, add to view project
+        // makeModelTransform(currSet);
+        gl.uniformMatrix4fv(mMatrixULoc, false, mMatrix); // pass in the m matrix
+        gl.uniformMatrix4fv(pvmMatrixULoc, false, hpvmMatrix); // pass in the hpvm matrix
+        
+        gl.uniform3fv(ambientULoc,buffers.material.ambient); // pass in the ambient reflectivity
+        gl.uniform3fv(diffuseULoc,buffers.material.diffuse); // pass in the diffuse reflectivity
+        gl.uniform3fv(specularULoc,buffers.material.specular); // pass in the specular reflectivity
+        gl.uniform1f(shininessULoc,buffers.material.n); // pass in the specular exponent
+        // gl.activeTexture(gl.TEXTURE0); // bind to active texture 0 (the first)
+        // gl.bindTexture(gl.TEXTURE_2D, buffers.material.texture); // bind the set's texture
+        // gl.uniform1i(textureULoc, 0); // pass in the texture and active texture 0
+        
+        // position, normal and uv buffers: activate and feed into vertex shader
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertsBuf); // activate position
+        gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normsBuf); // activate normal
+        gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed
+
+        // triangle buffer: activate and render
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.trisBuf); // activate
+        gl.drawElements(gl.TRIANGLES,3*buffers.numTris,gl.UNSIGNED_SHORT,0); // render
+    }
+}
+
+let targetTexture: WebGLTexture;
+let fb: WebGLFramebuffer;
+
+function makeFBO() {
+    const targetTextureWidth = 512;
+    const targetTextureHeight = 512;
+    targetTexture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+    
+    // define size and format of level 0
+    const level = 0;
+    const internalFormat = gl.RGBA;
+    const border = 0;
+    const format = gl.RGBA;
+    const type = gl.UNSIGNED_BYTE;
+    const data = null;
+    gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+                    targetTextureWidth, targetTextureHeight, border,
+                    format, type, data);
+    
+    // set the filtering so we don't need mips
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    fb = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    
+    const attachmentPoint = gl.DEPTH_ATTACHMENT;
+    gl.framebufferTexture2D(
+        gl.FRAMEBUFFER, attachmentPoint, gl.TEXTURE_2D, targetTexture, level);
+}
+
 // render the loaded model
 function renderModels() {
     if (moveMode === "continous-rotate") {
@@ -696,11 +746,6 @@ function renderModels() {
     const mMatrix = mat4.create(); // model matrix
     const hpvMatrix = mat4.create(); // hand * proj * view matrices
     const hpvmMatrix = mat4.create(); // hand * proj * view * model matrices
-    
-    window.requestAnimationFrame(renderModels); // set up frame render callback
-    
-    gl.clear(/*gl.COLOR_BUFFER_BIT |*/ gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
-    
     // set up handedness, projection and view
     mat4.fromScaling(hMatrix,vec3.fromValues(-1,1,1)); // create handedness matrix
     mat4.perspective(pMatrix,0.5*Math.PI,1,0.1,100); // create projection matrix
@@ -708,38 +753,14 @@ function renderModels() {
     mat4.lookAt(vMatrix,Eye,center,Up); // create view matrix
     mat4.multiply(hpvMatrix,hMatrix,pMatrix); // handedness * projection
     mat4.multiply(hpvMatrix,hpvMatrix,vMatrix); // handedness * projection * view
-
+    mat4.multiply(hpvmMatrix,hpvMatrix,mMatrix); // handedness * project * view * model
+    
+    window.requestAnimationFrame(renderModels); // set up frame render callback
+    
+    gl.clear(/*gl.COLOR_BUFFER_BIT |*/ gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
+    
     // render each triangle set
-    const buffers = allBuffers[selectedModel];
-
-    if (buffers !== null) {
-        // make model transform, add to view project
-        // makeModelTransform(currSet);
-        mat4.multiply(hpvmMatrix,hpvMatrix,mMatrix); // handedness * project * view * model
-        gl.uniformMatrix4fv(mMatrixULoc, false, mMatrix); // pass in the m matrix
-        gl.uniformMatrix4fv(pvmMatrixULoc, false, hpvmMatrix); // pass in the hpvm matrix
-        
-        gl.uniform3fv(ambientULoc,buffers.material.ambient); // pass in the ambient reflectivity
-        gl.uniform3fv(diffuseULoc,buffers.material.diffuse); // pass in the diffuse reflectivity
-        gl.uniform3fv(specularULoc,buffers.material.specular); // pass in the specular reflectivity
-        gl.uniform1f(shininessULoc,buffers.material.n); // pass in the specular exponent
-        gl.uniform1i(usingTextureULoc, buffers.material.texture !== null ? 1 : 0); // whether the set uses texture
-        gl.activeTexture(gl.TEXTURE0); // bind to active texture 0 (the first)
-        gl.bindTexture(gl.TEXTURE_2D, buffers.material.texture); // bind the set's texture
-        gl.uniform1i(textureULoc, 0); // pass in the texture and active texture 0
-        
-        // position, normal and uv buffers: activate and feed into vertex shader
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertsBuf); // activate position
-        gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normsBuf); // activate normal
-        gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.uvsBuf); // activate uv
-        gl.vertexAttribPointer(vUVAttribLoc,2,gl.FLOAT,false,0,0); // feed
-
-        // triangle buffer: activate and render
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.trisBuf); // activate
-        gl.drawElements(gl.TRIANGLES,3*buffers.numTris,gl.UNSIGNED_SHORT,0); // render
-    }
+    renderScene(mMatrix, hpvmMatrix);
 } // end render model
 
 
