@@ -369,6 +369,110 @@ function selectShadingMode(shadingMode: ShadingMode) {
     reset();
 }
 
+function generatePaper() {
+    // Perlin noise generation based on https://rtouti.github.io/graphics/perlin-noise-algorithm
+    function shuffle(arrayToShuffle: number[]) {
+        for(let e = arrayToShuffle.length-1; e > 0; e--) {
+            const index = Math.round(Math.random()*(e-1));
+            const temp = arrayToShuffle[e];
+            
+            arrayToShuffle[e] = arrayToShuffle[index];
+            arrayToShuffle[index] = temp;
+        }
+    }
+
+    function makePermutation() {
+        const permutation = [];
+        for(let i = 0; i < 256; i++) {
+            permutation.push(i);
+        }
+
+        shuffle(permutation);
+        
+        for(let i = 0; i < 256; i++) {
+            permutation.push(permutation[i]);
+        }
+        
+        return permutation;
+    }
+    const permutation = makePermutation();
+
+    function getConstantVector(v: number) {
+        // v is the value from the permutation table
+        const h = v & 3;
+        if (h == 0)
+            return [1.0, 1.0] as [number, number];
+        else if (h == 1)
+            return [-1.0, 1.0] as [number, number];
+        else if (h == 2)
+            return [-1.0, -1.0] as [number, number];
+        else
+            return [1.0, -1.0] as [number, number];
+    }
+
+    function fade(t: number) {
+        return ((6 * t - 15) * t + 10) * t * t * t;
+    }
+
+    function lerp(t: number, a1: number, a2: number) {
+        return a1 + t * (a2 - a1);
+    }
+
+    function dot(a: [number, number], b: [number, number]) {
+        return a[0] * b[0] + a[1] * b[1];
+    }
+
+    function noise2D(x: number, y: number) {
+        const X = Math.floor(x) & 255;
+        const Y = Math.floor(y) & 255;
+
+        const xf = x - Math.floor(x);
+        const yf = y - Math.floor(y);
+
+        const topRight = [xf - 1.0, yf - 1.0] as [number, number];
+        const topLeft = [xf, yf - 1.0] as [number, number];
+        const bottomRight = [xf - 1.0, yf] as [number, number];
+        const bottomLeft = [xf, yf] as [number, number];
+        
+        // Select a value from the permutation array for each of the 4 corners
+        const valueTopRight = permutation[permutation[X + 1] + Y + 1];
+        const valueTopLeft = permutation[permutation[X] + Y + 1];
+        const valueBottomRight = permutation[permutation[X + 1] + Y];
+        const valueBottomLeft = permutation[permutation[X] + Y];
+        
+        const dotTopRight = dot(topRight, getConstantVector(valueTopRight));
+        const dotTopLeft = dot(topLeft, getConstantVector(valueTopLeft));
+        const dotBottomRight = dot(bottomRight, getConstantVector(valueBottomRight));
+        const dotBottomLeft = dot(bottomLeft, getConstantVector(valueBottomLeft));
+        
+        const u = fade(xf);
+        const v = fade(yf);
+        
+        return lerp(u,
+            lerp(v, dotBottomLeft, dotTopLeft),
+            lerp(v, dotBottomRight, dotTopRight)
+        );
+    }
+
+    const data: number[] = [];
+    for (let y = 0; y < 512; y++) {
+        for (let x = 0; x < 512; x++) {
+            const n = (noise2D(x * 0.01, y * 0.01) + 1.0) / 2.0;
+            
+            const c = Math.round(255 * n);
+            data.push(c, c, c, 255);
+        }
+    }
+
+    const dataArr = new Uint8Array(data);
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, dataArr);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    return texture;
+}
+
 // setup the webGL shaders
 function setupShaders() {
     
@@ -586,20 +690,43 @@ function setupShaders() {
         varying vec3 vWorldPos; // world xyz of fragment
         varying vec3 vVertexNormal; // normal of fragment
         
-        void main(void) {
-            // vec3 lightDir = normalize(uLightPosition);
-        
-            // // ambient term
-            // vec3 ambient = uAmbient*uLightAmbient; 
-            
-            // // diffuse term
-            // vec3 normal = normalize(vVertexNormal); 
-            // vec3 light = normalize(uLightPosition - vWorldPos);
-            // float intensity = max(0.0,dot(normal,light));
-            // vec4 color = vec4(gl_Position.z, gl_Position.z, gl_Position.z, 1.0);
+        uniform bool uFirstPass;
+        uniform sampler2D uDepthTex;
 
-            // gl_FragColor = color;
-            gl_FragColor = vec4(vec3(gl_FragCoord.z), 1.0);
+        void makeKernel(inout vec4 n[9])
+        {
+            float w = 1.0 / 512.0;
+            float h = 1.0 / 512.0;
+
+            vec2 coord = gl_FragCoord.xy / vec2(512.0, 512.0);
+
+            n[0] = texture2D(uDepthTex, coord + vec2( -w, -h));
+            n[1] = texture2D(uDepthTex, coord + vec2(0.0, -h));
+            n[2] = texture2D(uDepthTex, coord + vec2(  w, -h));
+            n[3] = texture2D(uDepthTex, coord + vec2( -w, 0.0));
+            n[4] = texture2D(uDepthTex, coord);
+            n[5] = texture2D(uDepthTex, coord + vec2(  w, 0.0));
+            n[6] = texture2D(uDepthTex, coord + vec2( -w, h));
+            n[7] = texture2D(uDepthTex, coord + vec2(0.0, h));
+            n[8] = texture2D(uDepthTex, coord + vec2(  w, h));
+        }
+        
+        void main(void) {
+            if (uFirstPass) {
+                gl_FragColor = vec4(vec3(gl_FragCoord.z), 1.0);
+            } else {
+                vec4 n[9];
+                makeKernel(n);
+
+                vec4 sobelEdgeH = n[2] + (2.0*n[5]) + n[8] - (n[0] + (2.0*n[3]) + n[6]);
+                vec4 sobelEdgeV = n[0] + (2.0*n[1]) + n[2] - (n[6] + (2.0*n[7]) + n[8]);
+                vec4 sobel = sqrt((sobelEdgeH * sobelEdgeH) + (sobelEdgeV * sobelEdgeV));
+
+                if (sobel.r > 0.003) gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                else gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+
+                // gl_FragColor = vec4(val, 1.0);
+            }
         } // end main
     `;
     
@@ -705,6 +832,10 @@ let targetTexture: WebGLTexture;
 let fb: WebGLFramebuffer;
 
 function makeFBO() {
+    const ext = gl.getExtension("WEBGL_depth_texture");
+    if (ext === null) {
+        console.log("Depth texture extension does not exist");
+    }
     const targetTextureWidth = 512;
     const targetTextureHeight = 512;
     targetTexture = gl.createTexture()!;
@@ -712,10 +843,10 @@ function makeFBO() {
     
     // define size and format of level 0
     const level = 0;
-    const internalFormat = gl.RGBA;
+    const internalFormat = gl.DEPTH_COMPONENT;
     const border = 0;
-    const format = gl.RGBA;
-    const type = gl.UNSIGNED_BYTE;
+    const format = gl.DEPTH_COMPONENT;
+    const type = gl.UNSIGNED_SHORT;
     const data = null;
     gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
                     targetTextureWidth, targetTextureHeight, border,
@@ -730,6 +861,7 @@ function makeFBO() {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     
     const attachmentPoint = gl.DEPTH_ATTACHMENT;
+    // const attachmentPoint = gl.COLOR_ATTACHMENT0;
     gl.framebufferTexture2D(
         gl.FRAMEBUFFER, attachmentPoint, gl.TEXTURE_2D, targetTexture, level);
 }
@@ -757,10 +889,29 @@ function renderModels() {
     
     window.requestAnimationFrame(renderModels); // set up frame render callback
     
-    gl.clear(/*gl.COLOR_BUFFER_BIT |*/ gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
+    // gl.clear(/*gl.COLOR_BUFFER_BIT |*/ gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
+    gl.viewport(0, 0, 512, 512);
     
+    {
+        // render to our targetTexture by binding the framebuffer
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.clear(gl.DEPTH_BUFFER_BIT);
+        gl.uniform1i(firstPassULoc, 1);
+
+        renderScene(mMatrix, hpvmMatrix);
+    }
+    
+    {
+        // render to the canvas
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+        gl.clear(gl.DEPTH_BUFFER_BIT);
+        gl.uniform1i(firstPassULoc, 0);
+    
+        renderScene(mMatrix, hpvmMatrix);
+    }
     // render each triangle set
-    renderScene(mMatrix, hpvmMatrix);
 } // end render model
 
 
@@ -771,6 +922,8 @@ function main() {
     setupWebGL(); // set up the webGL environment
     loadObjs();
     setupShaders(); // setup the webGL shaders
+    makeFBO();
+    generatePaper();
     renderModels(); // draw the triangles using webGL
   
 } // end main
