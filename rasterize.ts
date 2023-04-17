@@ -46,6 +46,12 @@ let allBuffers: Record<ModelName, WebGLTriangleBuffers | null> = { teapot: null,
 /* shader parameter locations */
 let vPosAttribLoc: number; // where to put position for vertex shader
 let vNormAttribLoc: number; // where to put normal for vertex shader
+
+let eyePositionULoc: WebGLUniformLocation;
+let lightAmbientULoc: WebGLUniformLocation;
+let lightDiffuseULoc: WebGLUniformLocation;
+let lightSpecularULoc: WebGLUniformLocation;
+let lightPositionULoc: WebGLUniformLocation;
 let mMatrixULoc: WebGLUniformLocation; // where to put model matrix for vertex shader
 let pvmMatrixULoc: WebGLUniformLocation; // where to put project model view matrix for vertex shader
 let ambientULoc: WebGLUniformLocation; // where to put ambient reflecivity for fragment shader
@@ -54,6 +60,13 @@ let specularULoc: WebGLUniformLocation; // where to put specular reflecivity for
 let shininessULoc: WebGLUniformLocation; // where to put specular exponent for fragment shader
 let firstPassULoc: WebGLUniformLocation; // where to put using texture boolean for fragment shader
 let depthTexULoc: WebGLUniformLocation; // where to put texture for fragment shader
+
+let vPaperPosAttribLoc: number;
+let paperTexULoc: WebGLUniformLocation;
+let paperTexture: WebGLTexture;
+
+let mainProgram: WebGLProgram;
+let paperProgram: WebGLProgram;
 
 /* interaction variables */
 let Eye: v3 = vec3.clone(defaultEye); // eye position in world space
@@ -71,7 +84,7 @@ let selectedModel: ModelName = "teapot";
 const allModels = ["teapot", "plane", "person"] as ModelName[];
 
 type ShadingMode = "blinn-phong" | "cel-shading" | "pencil-sketch";
-let selectedShading: ShadingMode = "blinn-phong";
+let selectedShading: ShadingMode = "pencil-sketch";
 const allShadingModes = ["blinn-phong", "cel-shading", "pencil-sketch"] as ShadingMode[];
 
 // ASSIGNMENT HELPER FUNCTIONS
@@ -366,7 +379,37 @@ function selectModel(model: ModelName) {
 
 function selectShadingMode(shadingMode: ShadingMode) {
     selectedShading = shadingMode;
-    reset();
+    setupShaders();
+    // reset();
+}
+
+function createProgram(vShaderSrc: string, fShaderSrc: string) {
+    const fShader = gl.createShader(gl.FRAGMENT_SHADER)!; // create frag shader
+    gl.shaderSource(fShader, fShaderSrc); // attach code to shader
+    gl.compileShader(fShader); // compile the code for gpu execution
+
+    const vShader = gl.createShader(gl.VERTEX_SHADER)!; // create vertex shader
+    gl.shaderSource(vShader, vShaderSrc); // attach code to shader
+    gl.compileShader(vShader); // compile the code for gpu execution
+        
+    if (!gl.getShaderParameter(fShader, gl.COMPILE_STATUS)) { // bad frag shader compile
+        console.log("error during fragment shader compile: " + gl.getShaderInfoLog(fShader));  
+        gl.deleteShader(fShader);
+    } else if (!gl.getShaderParameter(vShader, gl.COMPILE_STATUS)) { // bad vertex shader compile
+        console.log("error during vertex shader compile: " + gl.getShaderInfoLog(vShader));  
+        gl.deleteShader(vShader);
+    } else { // no compile errors
+        const shaderProgram = gl.createProgram()!; // create the single shader program
+        gl.attachShader(shaderProgram, fShader); // put frag shader in program
+        gl.attachShader(shaderProgram, vShader); // put vertex shader in program
+        gl.linkProgram(shaderProgram); // link program into gl context
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) { // bad program link
+            console.log("error during shader program linking: " + gl.getProgramInfoLog(shaderProgram));
+        } else { // no shader program link errors
+            return shaderProgram;
+        } // end if no shader program link errors
+    } // end if no compile errors
 }
 
 function generatePaper() {
@@ -457,37 +500,70 @@ function generatePaper() {
     const data: number[] = [];
     for (let y = 0; y < 512; y++) {
         for (let x = 0; x < 512; x++) {
-            const n = (noise2D(x * 0.01, y * 0.01) + 1.0) / 2.0;
+            // in range [-1, 1]
+            const n = noise2D(x * 0.08, y * 0.08)
+
+            // set to [0.975, 1]
+            const val = n / 80.0 + 0.9875;
             
-            const c = Math.round(255 * n);
+            const c = Math.round(255 * val);
             data.push(c, c, c, 255);
         }
     }
 
     const dataArr = new Uint8Array(data);
-    const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
+    paperTexture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, paperTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, dataArr);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    return texture;
+
+    // define vertex shader in essl using es6 template strings
+    const paperVShaderCode = `
+        attribute vec2 aPosition;
+
+        varying vec2 vTexCoord;
+
+        void main(void) {
+            gl_Position = vec4(aPosition, 0.0, 1.0);
+            vTexCoord = aPosition * 0.5 + 0.5;
+        }
+    `;
+
+    const paperFShaderCode = `
+        precision mediump float;
+
+        uniform sampler2D uPaperTexture;
+
+        varying vec2 vTexCoord;
+
+        void main(void) {
+            gl_FragColor = texture2D(uPaperTexture, vTexCoord);
+        }
+    `;
+
+    paperProgram = createProgram(paperVShaderCode, paperFShaderCode)!;
+            
+    // locate and enable vertex attributes
+    vPaperPosAttribLoc = gl.getAttribLocation(paperProgram, "aPosition"); // ptr to vertex pos attrib
+    gl.enableVertexAttribArray(vPaperPosAttribLoc); // connect attrib to array
+    
+    paperTexULoc = gl.getUniformLocation(paperProgram, "uPaperTexture")!; // ptr to texture
 }
 
 // setup the webGL shaders
 function setupShaders() {
     
     // define vertex shader in essl using es6 template strings
-    const vShaderCode = `
+    const blinnPhongVShaderCode = `
         attribute vec3 aVertexPosition; // vertex position
         attribute vec3 aVertexNormal; // vertex normal
-        attribute vec2 aVertexUV; // vertex texture uv
         
         uniform mat4 umMatrix; // the model matrix
         uniform mat4 upvmMatrix; // the project view model matrix
         
         varying vec3 vWorldPos; // interpolated world position of vertex
         varying vec3 vVertexNormal; // interpolated normal for frag shader
-        varying vec2 vVertexUV; // interpolated uv for frag shader
 
         void main(void) {
             
@@ -499,14 +575,11 @@ function setupShaders() {
             // vertex normal (assume no non-uniform scale)
             vec4 vWorldNormal4 = umMatrix * vec4(aVertexNormal, 0.0);
             vVertexNormal = normalize(vec3(vWorldNormal4.x,vWorldNormal4.y,vWorldNormal4.z)); 
-            
-            // vertex uv
-            vVertexUV = aVertexUV;
         }
     `;
     
     // define fragment shader in essl using es6 template strings
-    const fShaderCode = `
+    const blinnPhongFShaderCode = `
         precision mediump float; // set float to medium precision
 
         // eye location
@@ -524,11 +597,6 @@ function setupShaders() {
         uniform vec3 uSpecular; // the specular reflectivity
         uniform float uShininess; // the specular exponent
         
-        // texture properties
-        uniform bool uUsingTexture; // if we are using a texture
-        uniform sampler2D uTexture; // the texture for the fragment
-        varying vec2 vVertexUV; // texture uv of fragment
-            
         // geometry properties
         varying vec3 vWorldPos; // world xyz of fragment
         varying vec3 vVertexNormal; // normal of fragment
@@ -553,14 +621,7 @@ function setupShaders() {
             // combine to find lit color
             vec3 litColor = ambient + diffuse + specular; 
             
-            if (!uUsingTexture) {
-                gl_FragColor = vec4(litColor, 1.0);
-            } else {
-                vec4 texColor = texture2D(uTexture, vec2(vVertexUV.s, vVertexUV.t));
-            
-                // gl_FragColor = vec4(texColor.rgb * litColor, texColor.a);
-                gl_FragColor = vec4(texColor.rgb * litColor, 1.0);
-            } // end if using texture
+            gl_FragColor = vec4(litColor, 1.0);
         } // end main
     `;
 
@@ -568,14 +629,12 @@ function setupShaders() {
     const celShadingVShaderCode = `
         attribute vec3 aVertexPosition; // vertex position
         attribute vec3 aVertexNormal; // vertex normal
-        attribute vec2 aVertexUV; // vertex texture uv
         
         uniform mat4 umMatrix; // the model matrix
         uniform mat4 upvmMatrix; // the project view model matrix
         
         varying vec3 vWorldPos; // interpolated world position of vertex
         varying vec3 vVertexNormal; // interpolated normal for frag shader
-        varying vec2 vVertexUV; // interpolated uv for frag shader
 
         void main(void) {
             
@@ -587,9 +646,6 @@ function setupShaders() {
             // vertex normal (assume no non-uniform scale)
             vec4 vWorldNormal4 = umMatrix * vec4(aVertexNormal, 0.0);
             vVertexNormal = normalize(vec3(vWorldNormal4.x,vWorldNormal4.y,vWorldNormal4.z)); 
-            
-            // vertex uv
-            vVertexUV = aVertexUV;
         }
     `;
 
@@ -611,11 +667,6 @@ function setupShaders() {
         uniform vec3 uSpecular; // the specular reflectivity
         uniform float uShininess; // the specular exponent
         
-        // texture properties
-        uniform bool uUsingTexture; // if we are using a texture
-        uniform sampler2D uTexture; // the texture for the fragment
-        varying vec2 vVertexUV; // texture uv of fragment
-            
         // geometry properties
         varying vec3 vWorldPos; // world xyz of fragment
         varying vec3 vVertexNormal; // normal of fragment
@@ -632,13 +683,17 @@ function setupShaders() {
             float intensity = max(0.0,dot(normal,light));
             vec4 color;
             if (intensity > 0.95)
-                color = vec4(1.0,0.5,0.5,1.0);
+                // color = vec4(1.0,0.5,0.5,1.0);
+                color = vec4(0.9,0.9,0.9,1.0);
             else if (intensity > 0.5)
-                color = vec4(0.6,0.3,0.3,1.0);
+                // color = vec4(0.6,0.3,0.3,1.0);
+                color = vec4(0.7,0.7,0.7,1.0);
             else if (intensity > 0.25)
-                color = vec4(0.4,0.2,0.2,1.0);
+                // color = vec4(0.4,0.2,0.2,1.0);
+                color = vec4(0.5,0.5,0.5,1.0);
             else
-                color = vec4(0.2,0.1,0.1,1.0);
+                // color = vec4(0.2,0.1,0.1,1.0);
+                color = vec4(0.4,0.4,0.4,1.0);
 
             gl_FragColor = color;
         } // end main
@@ -722,80 +777,43 @@ function setupShaders() {
                 vec4 sobelEdgeV = n[0] + (2.0*n[1]) + n[2] - (n[6] + (2.0*n[7]) + n[8]);
                 vec4 sobel = sqrt((sobelEdgeH * sobelEdgeH) + (sobelEdgeV * sobelEdgeV));
 
-                if (sobel.r > 0.003) gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-                else gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
-
-                // gl_FragColor = vec4(val, 1.0);
+                if (sobel.r > 0.003) gl_FragColor = vec4(0.3, 0.3, 0.3, 1.0);
+                // else gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
             }
         } // end main
     `;
-    
-    try {
-        const fShader = gl.createShader(gl.FRAGMENT_SHADER)!; // create frag shader
-        // gl.shaderSource(fShader,fShaderCode); // attach code to shader
-        // gl.shaderSource(fShader,celShadingFShaderCode); // attach code to shader
-        gl.shaderSource(fShader,pencilShadingFShaderCode); // attach code to shader
-        gl.compileShader(fShader); // compile the code for gpu execution
 
-        const vShader = gl.createShader(gl.VERTEX_SHADER)!; // create vertex shader
-        // gl.shaderSource(vShader,vShaderCode); // attach code to shader
-        // gl.shaderSource(vShader,celShadingVShaderCode); // attach code to shader
-        gl.shaderSource(vShader,pencilShadingVShaderCode); // attach code to shader
-        gl.compileShader(vShader); // compile the code for gpu execution
-            
-        if (!gl.getShaderParameter(fShader, gl.COMPILE_STATUS)) { // bad frag shader compile
-            throw "error during fragment shader compile: " + gl.getShaderInfoLog(fShader);  
-            gl.deleteShader(fShader);
-        } else if (!gl.getShaderParameter(vShader, gl.COMPILE_STATUS)) { // bad vertex shader compile
-            throw "error during vertex shader compile: " + gl.getShaderInfoLog(vShader);  
-            gl.deleteShader(vShader);
-        } else { // no compile errors
-            const shaderProgram = gl.createProgram()!; // create the single shader program
-            gl.attachShader(shaderProgram, fShader); // put frag shader in program
-            gl.attachShader(shaderProgram, vShader); // put vertex shader in program
-            gl.linkProgram(shaderProgram); // link program into gl context
-
-            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) { // bad program link
-                throw "error during shader program linking: " + gl.getProgramInfoLog(shaderProgram);
-            } else { // no shader program link errors
-                gl.useProgram(shaderProgram); // activate shader program (frag and vert)
-                
-                // locate and enable vertex attributes
-                vPosAttribLoc = gl.getAttribLocation(shaderProgram, "aVertexPosition"); // ptr to vertex pos attrib
-                gl.enableVertexAttribArray(vPosAttribLoc); // connect attrib to array
-                vNormAttribLoc = gl.getAttribLocation(shaderProgram, "aVertexNormal"); // ptr to vertex normal attrib
-                gl.enableVertexAttribArray(vNormAttribLoc); // connect attrib to array
-                
-                // locate vertex uniforms
-                mMatrixULoc = gl.getUniformLocation(shaderProgram, "umMatrix")!; // ptr to mmat
-                pvmMatrixULoc = gl.getUniformLocation(shaderProgram, "upvmMatrix")!; // ptr to pvmmat
-                
-                // locate fragment uniforms
-                const eyePositionULoc = gl.getUniformLocation(shaderProgram, "uEyePosition"); // ptr to eye position
-                const lightAmbientULoc = gl.getUniformLocation(shaderProgram, "uLightAmbient"); // ptr to light ambient
-                const lightDiffuseULoc = gl.getUniformLocation(shaderProgram, "uLightDiffuse"); // ptr to light diffuse
-                const lightSpecularULoc = gl.getUniformLocation(shaderProgram, "uLightSpecular"); // ptr to light specular
-                const lightPositionULoc = gl.getUniformLocation(shaderProgram, "uLightPosition"); // ptr to light position
-                ambientULoc = gl.getUniformLocation(shaderProgram, "uAmbient")!; // ptr to ambient
-                diffuseULoc = gl.getUniformLocation(shaderProgram, "uDiffuse")!; // ptr to diffuse
-                specularULoc = gl.getUniformLocation(shaderProgram, "uSpecular")!; // ptr to specular
-                shininessULoc = gl.getUniformLocation(shaderProgram, "uShininess")!; // ptr to shininess
-                firstPassULoc = gl.getUniformLocation(shaderProgram, "uFirstPass")!; // ptr to texture
-                depthTexULoc = gl.getUniformLocation(shaderProgram, "uDepthTex")!; // ptr to texture
-                
-                // pass global (not per model) constants into fragment uniforms
-                gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
-                gl.uniform3fv(lightAmbientULoc,lightAmbient); // pass in the light's ambient emission
-                gl.uniform3fv(lightDiffuseULoc,lightDiffuse); // pass in the light's diffuse emission
-                gl.uniform3fv(lightSpecularULoc,lightSpecular); // pass in the light's specular emission
-                gl.uniform3fv(lightPositionULoc,lightPosition); // pass in the light's position
-            } // end if no shader program link errors
-        } // end if no compile errors
-    } // end try 
+    const [vShaderCode, fShaderCode] = ({
+        "blinn-phong": [blinnPhongVShaderCode, blinnPhongFShaderCode],
+        "cel-shading": [celShadingVShaderCode, celShadingFShaderCode],
+        "pencil-sketch": [pencilShadingVShaderCode, pencilShadingFShaderCode],
+    } as Record<ShadingMode, [string, string]>)[selectedShading];
     
-    catch(e) {
-        console.log(e);
-    } // end catch
+    mainProgram = createProgram(vShaderCode, fShaderCode)!;
+    
+    // locate and enable vertex attributes
+    vPosAttribLoc = gl.getAttribLocation(mainProgram, "aVertexPosition"); // ptr to vertex pos attrib
+    gl.enableVertexAttribArray(vPosAttribLoc); // connect attrib to array
+    vNormAttribLoc = gl.getAttribLocation(mainProgram, "aVertexNormal"); // ptr to vertex normal attrib
+    gl.enableVertexAttribArray(vNormAttribLoc); // connect attrib to array
+    
+    // locate vertex uniforms
+    mMatrixULoc = gl.getUniformLocation(mainProgram, "umMatrix")!; // ptr to mmat
+    pvmMatrixULoc = gl.getUniformLocation(mainProgram, "upvmMatrix")!; // ptr to pvmmat
+    
+    // locate fragment uniforms
+    eyePositionULoc = gl.getUniformLocation(mainProgram, "uEyePosition")!; // ptr to eye position
+    lightAmbientULoc = gl.getUniformLocation(mainProgram, "uLightAmbient")!; // ptr to light ambient
+    lightDiffuseULoc = gl.getUniformLocation(mainProgram, "uLightDiffuse")!; // ptr to light diffuse
+    lightSpecularULoc = gl.getUniformLocation(mainProgram, "uLightSpecular")!; // ptr to light specular
+    lightPositionULoc = gl.getUniformLocation(mainProgram, "uLightPosition")!; // ptr to light position
+    ambientULoc = gl.getUniformLocation(mainProgram, "uAmbient")!; // ptr to ambient
+    diffuseULoc = gl.getUniformLocation(mainProgram, "uDiffuse")!; // ptr to diffuse
+    specularULoc = gl.getUniformLocation(mainProgram, "uSpecular")!; // ptr to specular
+    shininessULoc = gl.getUniformLocation(mainProgram, "uShininess")!; // ptr to shininess
+    firstPassULoc = gl.getUniformLocation(mainProgram, "uFirstPass")!; // ptr to texture
+    depthTexULoc = gl.getUniformLocation(mainProgram, "uDepthTex")!; // ptr to texture
+    
 } // end setup shaders
 
 function renderScene(mMatrix: any, hpvmMatrix: any) {
@@ -892,26 +910,72 @@ function renderModels() {
     // gl.clear(/*gl.COLOR_BUFFER_BIT |*/ gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
     gl.viewport(0, 0, 512, 512);
     
-    {
-        // render to our targetTexture by binding the framebuffer
-        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    if (selectedShading === "pencil-sketch") {
+        gl.useProgram(mainProgram); // activate shader program (frag and vert)
+        {
+            // render to our targetTexture by binding the framebuffer
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.clear(gl.DEPTH_BUFFER_BIT);
+            gl.uniform1i(firstPassULoc, 1);
+
+            renderScene(mMatrix, hpvmMatrix);
+        }
+        
+        gl.useProgram(paperProgram);
+        {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.clear(gl.DEPTH_BUFFER_BIT);
+            gl.bindTexture(gl.TEXTURE_2D, paperTexture);
+
+            const vertices = [
+                -1, -1,
+                1, -1,
+                -1, 1,
+                -1, 1,
+                1, -1,
+                1, 1
+            ];
+            const vertexBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+            gl.vertexAttribPointer(vPaperPosAttribLoc, 2, gl.FLOAT, false, 0, 0);
+
+            // triangle buffer: activate and render
+            const tris = [0, 1, 2, 3, 4, 5];
+            const trisBuf = gl.createBuffer()!;
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, trisBuf);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(tris), gl.STATIC_DRAW);
+            gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+        }
+
+        gl.useProgram(mainProgram); // activate shader program (frag and vert)
+        {
+            // render to the canvas
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+            gl.clear(gl.DEPTH_BUFFER_BIT);
+            gl.uniform1i(firstPassULoc, 0);
+        
+            renderScene(mMatrix, hpvmMatrix);
+        }
+    } else {
+        gl.useProgram(mainProgram); // activate shader program (frag and vert)
+
+        // pass global (not per model) constants into fragment uniforms
+        gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
+        gl.uniform3fv(lightAmbientULoc,lightAmbient); // pass in the light's ambient emission
+        gl.uniform3fv(lightDiffuseULoc,lightDiffuse); // pass in the light's diffuse emission
+        gl.uniform3fv(lightSpecularULoc,lightSpecular); // pass in the light's specular emission
+        gl.uniform3fv(lightPositionULoc,lightPosition); // pass in the light's position
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.bindTexture(gl.TEXTURE_2D, null);
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        gl.uniform1i(firstPassULoc, 1);
+    
+        renderScene(mMatrix, hpvmMatrix);
+    }
 
-        renderScene(mMatrix, hpvmMatrix);
-    }
-    
-    {
-        // render to the canvas
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.bindTexture(gl.TEXTURE_2D, targetTexture);
-        gl.clear(gl.DEPTH_BUFFER_BIT);
-        gl.uniform1i(firstPassULoc, 0);
-    
-        renderScene(mMatrix, hpvmMatrix);
-    }
-    // render each triangle set
 } // end render model
 
 
