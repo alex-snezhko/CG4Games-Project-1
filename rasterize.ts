@@ -2,11 +2,6 @@ var vec3: any;
 var mat4: any;
 /* GLOBAL CONSTANTS AND VARIABLES */
 
-/* assignment specific globals */
-const INPUT_URL = "https://ncsucg4games.github.io/prog2/"; // location of input files
-const INPUT_ROOMS_URL = INPUT_URL + "rooms.json"; // rooms file loc
-const INPUT_TRIANGLES_URL = INPUT_URL + "triangles.json"; // triangles file loc
-const INPUT_SPHERES_URL = INPUT_URL + "spheres.json"; // spheres file loc
 const defaultEye = vec3.fromValues(0, 0, 6); // default eye position in world space
 // const defaultCenter = vec3.fromValues(0,0,0); // default view direction in world space
 const defaultLookAt = vec3.fromValues(0,0,-1); // default view direction in world space
@@ -46,6 +41,7 @@ let allBuffers: Record<ModelName, WebGLTriangleBuffers | null> = { teapot: null,
 /* shader parameter locations */
 let vPosAttribLoc: number; // where to put position for vertex shader
 let vNormAttribLoc: number; // where to put normal for vertex shader
+let vUVAttribLoc: number; // where to put uv for vertex shader
 
 let eyePositionULoc: WebGLUniformLocation;
 let lightAmbientULoc: WebGLUniformLocation;
@@ -60,6 +56,11 @@ let specularULoc: WebGLUniformLocation; // where to put specular reflecivity for
 let shininessULoc: WebGLUniformLocation; // where to put specular exponent for fragment shader
 let firstPassULoc: WebGLUniformLocation; // where to put using texture boolean for fragment shader
 let depthTexULoc: WebGLUniformLocation; // where to put texture for fragment shader
+
+let drawingOffsetULoc: WebGLUniformLocation;
+let drawingOffsetTexture: WebGLTexture;
+let pencilTextureULoc: WebGLUniformLocation;
+let pencilTexture: WebGLTexture;
 
 let vPaperPosAttribLoc: number;
 let paperTexULoc: WebGLUniformLocation;
@@ -151,6 +152,23 @@ function handleKeyDown(event: KeyboardEvent) {
                 break;
         } // end switch
     }
+
+    switch (event.code) {
+        case "KeyL":
+            vec3.add(lightPosition, lightPosition, vec3.fromValues(-1, 0, 0));
+            break;
+        case "KeyJ":
+            vec3.add(lightPosition, lightPosition, vec3.fromValues(1, 0, 0));
+            break;
+        case "KeyI":
+            vec3.add(lightPosition, lightPosition, vec3.fromValues(0, 0, -1));
+            break;
+        case "KeyK":
+            vec3.add(lightPosition, lightPosition, vec3.fromValues(0, 0, 1));
+            break;
+        default:
+            break;
+    } // end switch
 } // end handleKeyDown
 
 // set up the webGL environment
@@ -200,6 +218,31 @@ function loadTexture(textureUrl: string) {
         gl.bindTexture(gl.TEXTURE_2D, texture); // activate model's new texture
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image); // norm 2D texture
         gl.generateMipmap(gl.TEXTURE_2D); // rebuild mipmap pyramid
+        gl.bindTexture(gl.TEXTURE_2D, null); // deactivate model's new texture
+    } // end when texture image loaded
+    image.onerror = function () { // when texture image load fails...
+        console.log("Unable to load texture " + textureUrl); 
+    } // end when texture image load fails
+    image.crossOrigin = "Anonymous"; // allow cross origin load, please
+    image.src = textureUrl; // set image location
+    return texture;
+} // end load texture
+
+function loadTextureNoMipmap(textureUrl: string) {
+    // load a 1x1 gray image into texture for use when no texture, and until texture loads
+    const texture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, texture); // activate model's texture
+    // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // invert vertical texcoord v, load gray 1x1
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,new Uint8Array([64, 64, 64, 255]));
+    // gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // invert vertical texcoord v
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); // use linear filter for magnification
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.bindTexture(gl.TEXTURE_2D, null); // deactivate model's texture
+    
+    const image = new Image(); // new image struct for texture
+    image.onload = function () { // when texture image loaded...
+        gl.bindTexture(gl.TEXTURE_2D, texture); // activate model's new texture
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image); // norm 2D texture
         gl.bindTexture(gl.TEXTURE_2D, null); // deactivate model's new texture
     } // end when texture image loaded
     image.onerror = function () { // when texture image load fails...
@@ -412,7 +455,7 @@ function createProgram(vShaderSrc: string, fShaderSrc: string) {
     } // end if no compile errors
 }
 
-function generatePaper() {
+function perlinNoise(low: number, high: number) {
     // Perlin noise generation based on https://rtouti.github.io/graphics/perlin-noise-algorithm
     function shuffle(arrayToShuffle: number[]) {
         for(let e = arrayToShuffle.length-1; e > 0; e--) {
@@ -503,13 +546,25 @@ function generatePaper() {
             // in range [-1, 1]
             const n = noise2D(x * 0.08, y * 0.08)
 
-            // set to [0.975, 1]
-            const val = n / 80.0 + 0.9875;
-            
-            const c = Math.round(255 * val);
-            data.push(c, c, c, 255);
+            // // set to [0.975, 1]
+            // const val = n / 80.0 + 0.9875;
+
+            // const c = Math.round(255 * val);
+            // data.push(c, c, c, 255);
+
+            const mid = (high - low) / 2 + low;
+            const variation = high - mid;
+            const val = mid + n * variation;
+            data.push(val);
         }
     }
+
+    return data;
+}
+
+function generatePaper() {
+    const perlin = perlinNoise(249, 255);
+    const data = perlin.flatMap(c => [c, c, c, 255]);
 
     const dataArr = new Uint8Array(data);
     paperTexture = gl.createTexture()!;
@@ -549,6 +604,22 @@ function generatePaper() {
     gl.enableVertexAttribArray(vPaperPosAttribLoc); // connect attrib to array
     
     paperTexULoc = gl.getUniformLocation(paperProgram, "uPaperTexture")!; // ptr to texture
+
+    // pencilTexture = loadTexture("http://localhost:8000/pencil.png");
+    pencilTexture = loadTextureNoMipmap("http://localhost:8000/pencil_whole.png");
+}
+
+function generateOffsets() {
+    const perlinX = perlinNoise(0, 255);
+    const perlinY = perlinNoise(0, 255);
+    const data = perlinX.flatMap((x, i) => [x, perlinY[i], 0, 0]);
+
+    const dataArr = new Uint8Array(data);
+    drawingOffsetTexture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, drawingOffsetTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, dataArr);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
 }
 
 // setup the webGL shaders
@@ -672,11 +743,6 @@ function setupShaders() {
         varying vec3 vVertexNormal; // normal of fragment
         
         void main(void) {
-            vec3 lightDir = normalize(uLightPosition);
-        
-            // ambient term
-            vec3 ambient = uAmbient*uLightAmbient; 
-            
             // diffuse term
             vec3 normal = normalize(vVertexNormal); 
             vec3 light = normalize(uLightPosition - vWorldPos);
@@ -703,12 +769,14 @@ function setupShaders() {
     const pencilShadingVShaderCode = `
         attribute vec3 aVertexPosition; // vertex position
         attribute vec3 aVertexNormal; // vertex normal
+        attribute vec2 aVertexUV; // vertex uv
         
         uniform mat4 umMatrix; // the model matrix
         uniform mat4 upvmMatrix; // the project view model matrix
         
         varying vec3 vWorldPos; // interpolated world position of vertex
         varying vec3 vVertexNormal; // interpolated normal for frag shader
+        varying vec2 vVertexUV; // interpolated uv for frag shader
 
         void main(void) {
             
@@ -720,6 +788,8 @@ function setupShaders() {
             // vertex normal (assume no non-uniform scale)
             vec4 vWorldNormal4 = umMatrix * vec4(aVertexNormal, 0.0);
             vVertexNormal = normalize(vec3(vWorldNormal4.x,vWorldNormal4.y,vWorldNormal4.z)); 
+
+            vVertexUV = aVertexUV;
         }
     `;
 
@@ -744,16 +814,24 @@ function setupShaders() {
         // geometry properties
         varying vec3 vWorldPos; // world xyz of fragment
         varying vec3 vVertexNormal; // normal of fragment
+        varying vec2 vVertexUV; // uv of fragment
         
         uniform bool uFirstPass;
         uniform sampler2D uDepthTex;
+
+        uniform sampler2D uPencilTexture;
+
+        uniform sampler2D uDrawingOffsetTexture;
 
         void makeKernel(inout vec4 n[9])
         {
             float w = 1.0 / 512.0;
             float h = 1.0 / 512.0;
 
-            vec2 coord = gl_FragCoord.xy / vec2(512.0, 512.0);
+            // vec2 unnormedCoord = gl_FragCoord.xy + (texture2D(uDrawingOffsetTexture, gl_FragCoord.xy).rg * 2.0 - 1.0) * 10.0;
+            vec2 unnormedCoord = gl_FragCoord.xy;
+
+            vec2 coord = unnormedCoord / vec2(512.0, 512.0);
 
             n[0] = texture2D(uDepthTex, coord + vec2( -w, -h));
             n[1] = texture2D(uDepthTex, coord + vec2(0.0, -h));
@@ -765,10 +843,20 @@ function setupShaders() {
             n[7] = texture2D(uDepthTex, coord + vec2(0.0, h));
             n[8] = texture2D(uDepthTex, coord + vec2(  w, h));
         }
+
+        // float LinearizeDepth(float depth) 
+        // {
+        //     float z = depth * 2.0 - 1.0; // back to NDC 
+        //     return (2.0 * 0.1 * 20.0) / (20.0 + 0.1 - z * (20.0 - 0.1));	
+        // }
         
         void main(void) {
             if (uFirstPass) {
-                gl_FragColor = vec4(vec3(gl_FragCoord.z), 1.0);
+                // gl_FragColor = vec4(vec3(gl_FragCoord.z), 1.0);
+                gl_FragColor = vec4(gl_FragCoord.z, vVertexNormal);
+
+                // float depth = LinearizeDepth(gl_FragCoord.z) / 20.0; // divide by far for demonstration
+                // gl_FragColor = vec4(vec3(depth), 1.0);
             } else {
                 vec4 n[9];
                 makeKernel(n);
@@ -777,8 +865,30 @@ function setupShaders() {
                 vec4 sobelEdgeV = n[0] + (2.0*n[1]) + n[2] - (n[6] + (2.0*n[7]) + n[8]);
                 vec4 sobel = sqrt((sobelEdgeH * sobelEdgeH) + (sobelEdgeV * sobelEdgeV));
 
-                if (sobel.r > 0.003) gl_FragColor = vec4(0.3, 0.3, 0.3, 1.0);
-                // else gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+                vec3 normal = normalize(vVertexNormal); 
+                vec3 light = normalize(uLightPosition - vWorldPos);
+                float intensity = sqrt(max(0.0, dot(normal,light)));
+
+                // float scale = 1.0;
+                // float scaleY = 1.0;
+                // float x = mod(vVertexUV.s * scale, 1.0);
+                // float y = mod(vVertexUV.t * scaleY, 1.0);
+                float x = vVertexUV.s;
+                // float y = vVertexUV.t * 0.1 + (1.0 - intensity) * 0.9;
+                float y = (1.0 - intensity) * 0.99;
+
+                vec4 texColor = texture2D(uPencilTexture, vec2(x, y));
+
+                vec3 litColor;
+                // if (sobel.r > 0.003) litColor = vec3(0.3, 0.3, 0.3);
+                if (sobel.x > 0.003 || sobel.y > 0.003 || sobel.z > 0.003 || sobel.w > 0.003) litColor = vec3(0.3, 0.3, 0.3);
+                else litColor = vec3(1.0, 1.0, 1.0);
+
+                gl_FragColor = vec4(texColor.rgb * litColor, 1.0);
+
+                // float color = 1.0 - sobel.r;
+                // float final = pow(color, 10.0);
+                // gl_FragColor = vec4(vec3(final), 1.0);
             }
         } // end main
     `;
@@ -796,6 +906,8 @@ function setupShaders() {
     gl.enableVertexAttribArray(vPosAttribLoc); // connect attrib to array
     vNormAttribLoc = gl.getAttribLocation(mainProgram, "aVertexNormal"); // ptr to vertex normal attrib
     gl.enableVertexAttribArray(vNormAttribLoc); // connect attrib to array
+    vUVAttribLoc = gl.getAttribLocation(mainProgram, "aVertexUV"); // ptr to vertex uv attrib
+    gl.enableVertexAttribArray(vUVAttribLoc); // connect attrib to array
     
     // locate vertex uniforms
     mMatrixULoc = gl.getUniformLocation(mainProgram, "umMatrix")!; // ptr to mmat
@@ -813,6 +925,8 @@ function setupShaders() {
     shininessULoc = gl.getUniformLocation(mainProgram, "uShininess")!; // ptr to shininess
     firstPassULoc = gl.getUniformLocation(mainProgram, "uFirstPass")!; // ptr to texture
     depthTexULoc = gl.getUniformLocation(mainProgram, "uDepthTex")!; // ptr to texture
+    pencilTextureULoc = gl.getUniformLocation(mainProgram, "uPencilTexture")!;
+    drawingOffsetULoc = gl.getUniformLocation(mainProgram, "uDrawingOffsetTexture")!;
     
 } // end setup shaders
 
@@ -830,15 +944,21 @@ function renderScene(mMatrix: any, hpvmMatrix: any) {
         gl.uniform3fv(diffuseULoc,buffers.material.diffuse); // pass in the diffuse reflectivity
         gl.uniform3fv(specularULoc,buffers.material.specular); // pass in the specular reflectivity
         gl.uniform1f(shininessULoc,buffers.material.n); // pass in the specular exponent
-        // gl.activeTexture(gl.TEXTURE0); // bind to active texture 0 (the first)
-        // gl.bindTexture(gl.TEXTURE_2D, buffers.material.texture); // bind the set's texture
-        // gl.uniform1i(textureULoc, 0); // pass in the texture and active texture 0
+
+        // pass global (not per model) constants into fragment uniforms
+        gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
+        gl.uniform3fv(lightAmbientULoc,lightAmbient); // pass in the light's ambient emission
+        gl.uniform3fv(lightDiffuseULoc,lightDiffuse); // pass in the light's diffuse emission
+        gl.uniform3fv(lightSpecularULoc,lightSpecular); // pass in the light's specular emission
+        gl.uniform3fv(lightPositionULoc,lightPosition); // pass in the light's position
         
         // position, normal and uv buffers: activate and feed into vertex shader
         gl.bindBuffer(gl.ARRAY_BUFFER, buffers.vertsBuf); // activate position
         gl.vertexAttribPointer(vPosAttribLoc,3,gl.FLOAT,false,0,0); // feed
         gl.bindBuffer(gl.ARRAY_BUFFER, buffers.normsBuf); // activate normal
         gl.vertexAttribPointer(vNormAttribLoc,3,gl.FLOAT,false,0,0); // feed
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.uvsBuf); // activate normal
+        gl.vertexAttribPointer(vUVAttribLoc,2,gl.FLOAT,false,0,0); // feed
 
         // triangle buffer: activate and render
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.trisBuf); // activate
@@ -846,7 +966,7 @@ function renderScene(mMatrix: any, hpvmMatrix: any) {
     }
 }
 
-let targetTexture: WebGLTexture;
+let depthTexture: WebGLTexture;
 let fb: WebGLFramebuffer;
 
 function makeFBO() {
@@ -856,8 +976,8 @@ function makeFBO() {
     }
     const targetTextureWidth = 512;
     const targetTextureHeight = 512;
-    targetTexture = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+    depthTexture = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, depthTexture);
     
     // define size and format of level 0
     const level = 0;
@@ -881,7 +1001,9 @@ function makeFBO() {
     const attachmentPoint = gl.DEPTH_ATTACHMENT;
     // const attachmentPoint = gl.COLOR_ATTACHMENT0;
     gl.framebufferTexture2D(
-        gl.FRAMEBUFFER, attachmentPoint, gl.TEXTURE_2D, targetTexture, level);
+        gl.FRAMEBUFFER, attachmentPoint, gl.TEXTURE_2D, depthTexture, level);
+
+    gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
 // render the loaded model
@@ -898,7 +1020,7 @@ function renderModels() {
     const hpvmMatrix = mat4.create(); // hand * proj * view * model matrices
     // set up handedness, projection and view
     mat4.fromScaling(hMatrix,vec3.fromValues(-1,1,1)); // create handedness matrix
-    mat4.perspective(pMatrix,0.5*Math.PI,1,0.1,100); // create projection matrix
+    mat4.perspective(pMatrix,0.5*Math.PI,1,0.1,20); // create projection matrix
     const center = vec3.add(vec3.create(), Eye, LookAt)
     mat4.lookAt(vMatrix,Eye,center,Up); // create view matrix
     mat4.multiply(hpvMatrix,hMatrix,pMatrix); // handedness * projection
@@ -915,6 +1037,11 @@ function renderModels() {
         {
             // render to our targetTexture by binding the framebuffer
             gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.activeTexture(gl.TEXTURE2);
             gl.bindTexture(gl.TEXTURE_2D, null);
             gl.clear(gl.DEPTH_BUFFER_BIT);
             gl.uniform1i(firstPassULoc, 1);
@@ -926,7 +1053,12 @@ function renderModels() {
         {
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
             gl.clear(gl.DEPTH_BUFFER_BIT);
+            gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, paperTexture);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, null);
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, null);
 
             const vertices = [
                 -1, -1,
@@ -953,21 +1085,25 @@ function renderModels() {
         {
             // render to the canvas
             gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-            gl.bindTexture(gl.TEXTURE_2D, targetTexture);
-            gl.clear(gl.DEPTH_BUFFER_BIT);
             gl.uniform1i(firstPassULoc, 0);
-        
+            gl.clear(gl.DEPTH_BUFFER_BIT);
+
+            gl.activeTexture(gl.TEXTURE0); // bind to active texture 0 (the first)
+            gl.bindTexture(gl.TEXTURE_2D, depthTexture);
+            gl.uniform1i(depthTexULoc, 0); // pass in the texture and active texture 0
+
+            gl.activeTexture(gl.TEXTURE1); // bind to active texture 0 (the first)
+            gl.bindTexture(gl.TEXTURE_2D, pencilTexture);
+            gl.uniform1i(pencilTextureULoc, 1); // pass in the texture and active texture 0
+
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, drawingOffsetTexture);
+            gl.uniform1i(drawingOffsetULoc, 2); // pass in the texture and active texture 0
+
             renderScene(mMatrix, hpvmMatrix);
         }
     } else {
         gl.useProgram(mainProgram); // activate shader program (frag and vert)
-
-        // pass global (not per model) constants into fragment uniforms
-        gl.uniform3fv(eyePositionULoc,Eye); // pass in the eye's position
-        gl.uniform3fv(lightAmbientULoc,lightAmbient); // pass in the light's ambient emission
-        gl.uniform3fv(lightDiffuseULoc,lightDiffuse); // pass in the light's diffuse emission
-        gl.uniform3fv(lightSpecularULoc,lightSpecular); // pass in the light's specular emission
-        gl.uniform3fv(lightPositionULoc,lightPosition); // pass in the light's position
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.bindTexture(gl.TEXTURE_2D, null);
@@ -988,6 +1124,7 @@ function main() {
     setupShaders(); // setup the webGL shaders
     makeFBO();
     generatePaper();
+    generateOffsets();
     renderModels(); // draw the triangles using webGL
   
 } // end main
