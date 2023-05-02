@@ -62,9 +62,13 @@ let drawingOffsetTexture: WebGLTexture;
 let pencilTextureULoc: WebGLUniformLocation;
 let pencilTexture: WebGLTexture;
 
+let randomValULoc: WebGLUniformLocation;
+
 let vPaperPosAttribLoc: number;
 let paperTexULoc: WebGLUniformLocation;
 let paperTexture: WebGLTexture;
+let paperRandomValXULoc: WebGLUniformLocation;
+let paperRandomValYULoc: WebGLUniformLocation;
 
 let mainProgram: WebGLProgram;
 let paperProgram: WebGLProgram;
@@ -77,7 +81,7 @@ let Up: v3 = vec3.clone(defaultUp); // view up vector in world space
 let eyeYAngle: number = 0;
 
 type MoveMode = "free-rotate" | "continous-rotate" | "move";
-let moveMode: MoveMode = "move";
+let moveMode: MoveMode = "free-rotate";
 const allMoveModes = ["free-rotate", "continous-rotate", "move"] as MoveMode[];
 
 type ModelName = "teapot" | "plane" | "person";
@@ -298,11 +302,6 @@ async function loadObjs() {
 
             function getV3(strs: string[]) {
                 const v3 = strs.map(parseFloat).slice(0, 3) as v3;
-                // if (model === "teapot") {
-                //     const t = v3[1];
-                //     v3[1] = v3[2];
-                //     v3[2] = t;
-                // }
                 return v3;
             }
 
@@ -546,12 +545,6 @@ function perlinNoise(low: number, high: number) {
             // in range [-1, 1]
             const n = noise2D(x * 0.08, y * 0.08)
 
-            // // set to [0.975, 1]
-            // const val = n / 80.0 + 0.9875;
-
-            // const c = Math.round(255 * val);
-            // data.push(c, c, c, 255);
-
             const mid = (high - low) / 2 + low;
             const variation = high - mid;
             const val = mid + n * variation;
@@ -581,7 +574,7 @@ function generatePaper() {
 
         void main(void) {
             gl_Position = vec4(aPosition, 0.0, 1.0);
-            vTexCoord = aPosition * 0.5 + 0.5;
+            vTexCoord = aPosition * 0.4 + 0.5;
         }
     `;
 
@@ -589,11 +582,13 @@ function generatePaper() {
         precision mediump float;
 
         uniform sampler2D uPaperTexture;
+        uniform float uRandomValX;
+        uniform float uRandomValY;
 
         varying vec2 vTexCoord;
 
         void main(void) {
-            gl_FragColor = texture2D(uPaperTexture, vTexCoord);
+            gl_FragColor = texture2D(uPaperTexture, vTexCoord + vec2((uRandomValX / 10.0), (uRandomValY / 10.0)));
         }
     `;
 
@@ -604,8 +599,10 @@ function generatePaper() {
     gl.enableVertexAttribArray(vPaperPosAttribLoc); // connect attrib to array
     
     paperTexULoc = gl.getUniformLocation(paperProgram, "uPaperTexture")!; // ptr to texture
+    paperRandomValXULoc = gl.getUniformLocation(paperProgram, "uRandomValX")!; // ptr to texture
+    paperRandomValYULoc = gl.getUniformLocation(paperProgram, "uRandomValY")!; // ptr to texture
 
-    // pencilTexture = loadTexture("http://localhost:8000/pencil.png");
+    // pencil texture found from https://github.com/ekzhang/sketching/blob/master/textures/texture_128_64_64.png
     pencilTexture = loadTextureNoMipmap("http://localhost:8000/pencil_whole.png");
 }
 
@@ -822,7 +819,9 @@ function setupShaders() {
         uniform sampler2D uPencilTexture;
 
         uniform sampler2D uDrawingOffsetTexture;
+        uniform float uRandomVal;
 
+        // kernel taken from https://gist.github.com/Hebali/6ebfc66106459aacee6a9fac029d0115
         void makeKernel(inout vec4 n[9])
         {
             float w = 1.0 / 512.0;
@@ -853,7 +852,8 @@ function setupShaders() {
         void main(void) {
             if (uFirstPass) {
                 // gl_FragColor = vec4(vec3(gl_FragCoord.z), 1.0);
-                gl_FragColor = vec4(gl_FragCoord.z, vVertexNormal);
+                // gl_FragColor = vec4(gl_FragCoord.z, vVertexNormal);
+                gl_FragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 0.0);
 
                 // float depth = LinearizeDepth(gl_FragCoord.z) / 20.0; // divide by far for demonstration
                 // gl_FragColor = vec4(vec3(depth), 1.0);
@@ -875,13 +875,15 @@ function setupShaders() {
                 // float y = mod(vVertexUV.t * scaleY, 1.0);
                 float x = vVertexUV.s;
                 // float y = vVertexUV.t * 0.1 + (1.0 - intensity) * 0.9;
-                float y = (1.0 - intensity) * 0.99;
+                float y = (1.0 - intensity) * 0.89 + (uRandomVal / 40.0);
 
                 vec4 texColor = texture2D(uPencilTexture, vec2(x, y));
 
                 vec3 litColor;
-                // if (sobel.r > 0.003) litColor = vec3(0.3, 0.3, 0.3);
-                if (sobel.x > 0.003 || sobel.y > 0.003 || sobel.z > 0.003 || sobel.w > 0.003) litColor = vec3(0.3, 0.3, 0.3);
+                float depthThresh = 0.003;
+                float normThresh = 0.003;
+                // if (sobel.x > depthThresh || sobel.y > normThresh || sobel.z > normThresh || sobel.w > normThresh) litColor = vec3(0.3, 0.3, 0.3);
+                if (sobel.y > normThresh || sobel.z > normThresh || sobel.w > normThresh) litColor = vec3(0.3, 0.3, 0.3);
                 else litColor = vec3(1.0, 1.0, 1.0);
 
                 gl_FragColor = vec4(texColor.rgb * litColor, 1.0);
@@ -927,7 +929,7 @@ function setupShaders() {
     depthTexULoc = gl.getUniformLocation(mainProgram, "uDepthTex")!; // ptr to texture
     pencilTextureULoc = gl.getUniformLocation(mainProgram, "uPencilTexture")!;
     drawingOffsetULoc = gl.getUniformLocation(mainProgram, "uDrawingOffsetTexture")!;
-    
+    randomValULoc = gl.getUniformLocation(mainProgram, "uRandomVal")!;
 } // end setup shaders
 
 function renderScene(mMatrix: any, hpvmMatrix: any) {
@@ -1006,8 +1008,22 @@ function makeFBO() {
     gl.bindTexture(gl.TEXTURE_2D, null);
 }
 
+let readyForRerandomize = false;
+let randomVal = 0;
+let randomVal2 = 0;
+
 // render the loaded model
 function renderModels() {
+    
+    window.requestAnimationFrame(renderModels); // set up frame render callback
+
+    if (readyForRerandomize) {
+        readyForRerandomize = false;
+        randomVal = Math.random();
+        randomVal2 = Math.random();
+        return;
+    }
+
     if (moveMode === "continous-rotate") {
         rotateView(0.005, vec3.fromValues(0, 1, 0));
     }
@@ -1026,8 +1042,6 @@ function renderModels() {
     mat4.multiply(hpvMatrix,hMatrix,pMatrix); // handedness * projection
     mat4.multiply(hpvMatrix,hpvMatrix,vMatrix); // handedness * projection * view
     mat4.multiply(hpvmMatrix,hpvMatrix,mMatrix); // handedness * project * view * model
-    
-    window.requestAnimationFrame(renderModels); // set up frame render callback
     
     // gl.clear(/*gl.COLOR_BUFFER_BIT |*/ gl.DEPTH_BUFFER_BIT); // clear frame/depth buffers
     gl.viewport(0, 0, 512, 512);
@@ -1059,6 +1073,9 @@ function renderModels() {
             gl.bindTexture(gl.TEXTURE_2D, null);
             gl.activeTexture(gl.TEXTURE2);
             gl.bindTexture(gl.TEXTURE_2D, null);
+
+            gl.uniform1f(paperRandomValXULoc, randomVal);
+            gl.uniform1f(paperRandomValYULoc, randomVal2);
 
             const vertices = [
                 -1, -1,
@@ -1100,6 +1117,8 @@ function renderModels() {
             gl.bindTexture(gl.TEXTURE_2D, drawingOffsetTexture);
             gl.uniform1i(drawingOffsetULoc, 2); // pass in the texture and active texture 0
 
+            gl.uniform1f(randomValULoc, randomVal);
+
             renderScene(mMatrix, hpvmMatrix);
         }
     } else {
@@ -1126,5 +1145,7 @@ function main() {
     generatePaper();
     generateOffsets();
     renderModels(); // draw the triangles using webGL
+
+    setInterval(() => readyForRerandomize = true, 250)
   
 } // end main
