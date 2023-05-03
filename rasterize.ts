@@ -827,7 +827,6 @@ function setupShaders() {
             float w = 1.0 / 512.0;
             float h = 1.0 / 512.0;
 
-            // vec2 unnormedCoord = gl_FragCoord.xy + (texture2D(uDrawingOffsetTexture, gl_FragCoord.xy).rg * 2.0 - 1.0) * 10.0;
             vec2 unnormedCoord = gl_FragCoord.xy;
 
             vec2 coord = unnormedCoord / vec2(512.0, 512.0);
@@ -843,20 +842,16 @@ function setupShaders() {
             n[8] = texture2D(uDepthTex, coord + vec2(  w, h));
         }
 
-        // float LinearizeDepth(float depth) 
-        // {
-        //     float z = depth * 2.0 - 1.0; // back to NDC 
-        //     return (2.0 * 0.1 * 20.0) / (20.0 + 0.1 - z * (20.0 - 0.1));	
-        // }
+        float LinearizeDepth(float depth) 
+        {
+            float z = depth * 2.0 - 1.0; // back to NDC 
+            return (2.0 * 0.1 * 20.0) / (20.0 + 0.1 - z * (20.0 - 0.1));	
+        }
         
         void main(void) {
             if (uFirstPass) {
-                // gl_FragColor = vec4(vec3(gl_FragCoord.z), 1.0);
-                // gl_FragColor = vec4(gl_FragCoord.z, vVertexNormal);
-                gl_FragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 0.0);
-
-                // float depth = LinearizeDepth(gl_FragCoord.z) / 20.0; // divide by far for demonstration
-                // gl_FragColor = vec4(vec3(depth), 1.0);
+                float depth = LinearizeDepth(gl_FragCoord.z) / 20.0; // divide by far for demonstration
+                gl_FragColor = vec4(depth, vVertexNormal);
             } else {
                 vec4 n[9];
                 makeKernel(n);
@@ -869,28 +864,18 @@ function setupShaders() {
                 vec3 light = normalize(uLightPosition - vWorldPos);
                 float intensity = sqrt(max(0.0, dot(normal,light)));
 
-                // float scale = 1.0;
-                // float scaleY = 1.0;
-                // float x = mod(vVertexUV.s * scale, 1.0);
-                // float y = mod(vVertexUV.t * scaleY, 1.0);
                 float x = vVertexUV.s;
-                // float y = vVertexUV.t * 0.1 + (1.0 - intensity) * 0.9;
                 float y = (1.0 - intensity) * 0.89 + (uRandomVal / 40.0);
 
                 vec4 texColor = texture2D(uPencilTexture, vec2(x, y));
 
                 vec3 litColor;
-                float depthThresh = 0.003;
-                float normThresh = 0.003;
-                // if (sobel.x > depthThresh || sobel.y > normThresh || sobel.z > normThresh || sobel.w > normThresh) litColor = vec3(0.3, 0.3, 0.3);
-                if (sobel.y > normThresh || sobel.z > normThresh || sobel.w > normThresh) litColor = vec3(0.3, 0.3, 0.3);
+                float depthThresh = 0.05;
+                float normThresh = 2.1;
+                if (sobel.x > depthThresh || sobel.y > normThresh || sobel.z > normThresh || sobel.w > normThresh) litColor = vec3(0.3, 0.3, 0.3);
                 else litColor = vec3(1.0, 1.0, 1.0);
 
                 gl_FragColor = vec4(texColor.rgb * litColor, 1.0);
-
-                // float color = 1.0 - sobel.r;
-                // float final = pow(color, 10.0);
-                // gl_FragColor = vec4(vec3(final), 1.0);
             }
         } // end main
     `;
@@ -972,10 +957,7 @@ let depthTexture: WebGLTexture;
 let fb: WebGLFramebuffer;
 
 function makeFBO() {
-    const ext = gl.getExtension("WEBGL_depth_texture");
-    if (ext === null) {
-        console.log("Depth texture extension does not exist");
-    }
+    // following https://webglfundamentals.org/webgl/lessons/webgl-render-to-texture.html
     const targetTextureWidth = 512;
     const targetTextureHeight = 512;
     depthTexture = gl.createTexture()!;
@@ -983,10 +965,10 @@ function makeFBO() {
     
     // define size and format of level 0
     const level = 0;
-    const internalFormat = gl.DEPTH_COMPONENT;
+    const internalFormat = gl.RGBA;
     const border = 0;
-    const format = gl.DEPTH_COMPONENT;
-    const type = gl.UNSIGNED_SHORT;
+    const format = gl.RGBA;
+    const type = gl.UNSIGNED_BYTE;
     const data = null;
     gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
                     targetTextureWidth, targetTextureHeight, border,
@@ -1000,10 +982,16 @@ function makeFBO() {
     fb = gl.createFramebuffer()!;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
     
-    const attachmentPoint = gl.DEPTH_ATTACHMENT;
-    // const attachmentPoint = gl.COLOR_ATTACHMENT0;
+    const attachmentPoint = gl.COLOR_ATTACHMENT0;
     gl.framebufferTexture2D(
         gl.FRAMEBUFFER, attachmentPoint, gl.TEXTURE_2D, depthTexture, level);
+
+    const depthBuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depthBuffer);
+
+    // make a depth buffer and the same size as the targetTexture
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, targetTextureWidth, targetTextureHeight);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depthBuffer);
 
     gl.bindTexture(gl.TEXTURE_2D, null);
 }
@@ -1057,7 +1045,7 @@ function renderModels() {
             gl.bindTexture(gl.TEXTURE_2D, null);
             gl.activeTexture(gl.TEXTURE2);
             gl.bindTexture(gl.TEXTURE_2D, null);
-            gl.clear(gl.DEPTH_BUFFER_BIT);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
             gl.uniform1i(firstPassULoc, 1);
 
             renderScene(mMatrix, hpvmMatrix);
